@@ -1,0 +1,1076 @@
+<script>
+
+var STATE_INIT = 0;
+var STATE_OPENED = 1;
+var STATE_CLOSED = 2;
+var STATE_VISITED = 3;
+var STATE_PATH = 4;
+
+var SEARCH_TYPE_BFS = 0;
+var SEARCH_TYPE_DFS = 1;
+var SEARCH_TYPE_UCS = 2;
+var SEARCH_TYPE_ASTAR = 3;
+
+var htype;
+var map;
+var mapSearch;
+var binaryHeap;
+var heapPointer = 0;
+var start;
+var goal;
+var width;
+var height;
+
+var keepNodes;
+var keepTime;
+
+var toggleStartGoal = false;
+
+var startTime;
+var endTime;
+
+/* begin timing */
+function startTiming() {
+	startTime = new Date();
+}
+
+/* stop timing */
+function endTiming() {
+	endTime = new Date();
+}
+
+/* draw the map in the map area on the screen */
+function render() {
+	var html = "<table cellpadding=0 cellspacing=0 style=\"width: " + width*16 + "px;\">";
+	var cl;
+	for (var y=0; y<height; y++) {
+		html += "<tr>";
+		for (var x=0; x<width; x++) {
+			if (map[x][y] == "F") cl = "fo";
+			else if (map[x][y] == "r") cl = "ri";
+			else if (map[x][y] != "R" && map[x][y] != "f" && map[x][y] != "h" && map[x][y] != "M" && map[x][y] != "W") {
+				alert("Invalid terrain feature [" + map[x][y] + "] in map data at position " + x + "," + y + " (which appears on line " + (y + 4) +").  Valid map features are R, f, F, h, r, M, and W.");
+				return;
+			}
+			else cl = map[x][y];
+			if (x == start[0] && y == start[1]) cl = "man" + cl;
+			else if (x == goal[0] && y == goal[1]) cl = "goal" + cl;
+			else if (mapSearch && (mapSearch[x][y].state == STATE_PATH)) cl = "fade" + cl;
+			else if (mapSearch && (mapSearch[x][y].state == STATE_VISITED || mapSearch[x][y].state == STATE_CLOSED)) cl = "visited" + cl;
+			
+			html += "<td onclick=\"mark(" + x + "," + y + ");\" class=\"" + cl + "\" id = \"x" + x + "y" + y + "\">&nbsp;</td>";
+		}
+		html += "</tr>";
+	}
+	html += "</table>"
+	var elem = document.getElementById("grid");
+	elem.innerHTML = html;
+	
+}
+
+function tg() { window.status = "Click the grid square to place the start or goal icon there."; return true;}
+function ug() { window.status = ""; return true;}
+
+function mark(x,y) {
+	if (!(x >= 0 && x <= (width-1) && y >= 0 && y <= (height-1))) { return; }
+	if (toggleStartGoal) {
+		goal[0] = x;
+		goal[1] = y;
+	} else {
+		start[0] = x;
+		start[1] = y;
+	}
+	autoSearch();
+}
+
+function autoSearch() {
+	if (document.forms[0].elements["clickSearch"].checked) {
+		var s = document.forms[0].elements["search"][document.forms[0].elements["search"].selectedIndex].value;
+		if (s == 0)
+			search(SEARCH_TYPE_ASTAR, true, false);
+		else
+			search(SEARCH_TYPE_UCS, true, false);
+	}
+	else render();
+	
+}
+
+function randomStartGoal() {
+	sx = Math.floor(Math.random()*width);
+	sy = Math.floor(Math.random()*height);
+	gx = Math.floor(Math.random()*width);
+	gy = Math.floor(Math.random()*height);
+	start[0] = sx;
+	start[1] = sy;
+	goal[0] = gx;
+	goal[1] = gy;
+	autoSearch();
+}
+
+function changeStartGoal() {
+	toggleStartGoal = !toggleStartGoal;
+	elem = document.getElementById("toggle");
+	elem2 = document.getElementById("toggle2");
+	if (elem && elem2) {
+		if (toggleStartGoal) { elem.innerHTML = "goal"; elem2.innerHTML = "goal"; }
+		else { elem.innerHTML = "start"; elem2.innerHTML = "start"; }
+	}
+}
+
+/* toggle the display of the start icon */
+function showStart(which) {
+	if (!which || which == "") which = "x" + start[0] + "y" + start[1];
+	var elem = document.getElementById(which);
+	if (!elem) return;
+	if (elem.className.substring(0,3) == "man") elem.className = elem.className.substring(3);
+	else if (elem.className.substring(0,4) == "fade") elem.className = "man" + elem.className.substring(4);
+	else if (elem.className.substring(0,7) == "visited") elem.className = "man" + elem.className.substring(7);
+	else elem.className = "man" + elem.className;
+}
+
+/* toggle the display of the goal icon */
+function showGoal(which) {
+	if (!which || which == "") which = "x" + goal[0] + "y" + goal[1];
+	var elem = document.getElementById(which);
+	if (!elem) return;
+	if (elem.className.substring(0,4) == "goal") elem.className = elem.className.substring(4);
+	else elem.className = "goal" + elem.className;
+}
+
+/* toggle a faded version of the given grid square */
+function fade(which) {
+	var elem = document.getElementById(which);
+	if (!elem) return;
+	if (elem.className.substring(0,4) == "fade") elem.className = elem.className.substring(4);
+	else elem.className = "fade" + elem.className;
+}
+
+/* toggle a faded version of the given grid square, used to indicate a found path */
+function visit(which) {
+	var elem = document.getElementById(which);
+	if (!elem) return;
+	if (elem.className.substring(0,7) == "visited") elem.className = elem.className.substring(7);
+	else elem.className = "visited" + elem.className;
+	
+}
+
+/* reset path/visited grid square markings; after this call, next render will show the map only */
+function resetMarkings() {
+	mapSearch = null;
+}
+
+/* read and validate the map data, then render the map based on the read data. */
+function loadMap() {
+	resetMarkings();
+	var input = document.forms[0].elements["map"].value.split("\n");
+	if (input == null || input.length < 4) { alert ("Sorry, map data must have at least 4 lines."); return; }
+
+	if (input[0].split(" ").length != 2) { alert ("The map width and height were not specified properly."); return; }
+	if (input[1].split(" ").length != 2) { alert ("The start position was not specified properly."); return; }
+	if (input[2].split(" ").length != 2) { alert ("The goal position was not specified properly."); return; }
+
+	width = input[0].split(" ")[0];
+	height = input[0].split(" ")[1];
+	
+	if (input.length < Number(height)+3) { alert ("The map data does not have enough rows.  There should be " + (Number(height)+3) + " total lines."); return; }
+
+    for (i=3; i<input.length; i++)
+		if (input[i].length < width && i-3 < Number(height)) { alert("Line " + i + " of the map file does not have enough data.  There should be " + width + " characters."); return; }
+	
+	start = new Array(2);
+	start[0] = input[1].split(" ")[0];
+	start[1] = input[1].split(" ")[1];
+
+	goal = new Array(2);
+	goal[0] = input[2].split(" ")[0];
+	goal[1] = input[2].split(" ")[1];
+	
+	map = new Array();
+	for (var x=0; x<width; x++) {
+		map[x] = new Array(height);
+		for (var y=0; y<height; y++) {
+			map[x][y] = input[3+y].substring(x,Number(x)+1);
+		}
+	}
+	
+	render();
+}
+
+/* produce an arbitrarily sized, randomized map.  this actually generates a height map of width/height equal to a power of two 
+   (large enough to cover the given width/height), because this makes the recursive fractal height map generator much simpler. */
+function randomHeightMap(width, length) {
+	if (width < 2 || length < 2) { alert("Width and height must be at least 2."); return}
+	if (width > 256 || length > 256) { alert("Width and height must be less than 257."); return}
+	var size = 1;
+	while (size < Math.max(width, length))
+		size *= 2;
+	rndHeightMap(size+1, width, length);
+}
+
+/* generate randomized fractal height map of the given size */
+function rndHeightMap(size, width, length) {
+	var heightMap = new Array(size);
+	for (var x=0; x<size; x++) {
+		heightMap[x] = new Array(size);
+	}
+	
+	heightMap[0][0] = getRand();
+	heightMap[size-1][0] = getRand();
+	heightMap[size-1][size-1] = getRand();
+	heightMap[0][size-1] = getRand();
+	
+	recurseHeightMap(heightMap, 0, 0, size-1, size-1);
+	loadHeightMap(heightMap, width, length);
+}
+
+/* subproblem of the height map generator.
+   this is a crude implementation of the "diamond-square" algorithm described here:
+		http://www.gameprogrammer.com/fractal.html#diamond
+ */
+function recurseHeightMap(heightMap, x1, y1, x2, y2) {
+	/* stop when the square is width 1 */
+	var width = x2-x1;
+	if (width == 1) return;
+	
+	var scale = Number(document.forms[0].elements["scale"][document.forms[0].elements["scale"].selectedIndex].value);
+	
+	width = width / 2;
+	
+	/* generate random perturbations of height for each point on the height map.  scale them to fit within our acceptible range of terrain features. */
+	var h = Math.round((scale/2)-Math.random()*scale + (heightMap[x1][y1] + heightMap[x2][y1] + heightMap[x2][y2] + heightMap[x1][y2]) / 4);
+	if (h > 3) h = 3;
+	else if (h < -3) h = -3;
+	
+	heightMap[x1+width][y1+width] = h;
+	
+
+	var h2 = Math.round((scale/2)-Math.random()*scale + (heightMap[x1][y1] + heightMap[x2][y1] + heightMap[x1+width][y1+width]) / 3);
+	if (h2 > 3) h2 = 3; else if (h2 < -3) h2 = -3;
+
+	var h3 = Math.round((scale/2)-Math.random()*scale + (heightMap[x1][y1] + heightMap[x1+width][y1+width] + heightMap[x1][y2]) / 3);
+	if (h3 > 3) h3 = 3; else if (h3 < -3) h3 = -3;
+	
+	var h4 = Math.round((scale/2)-Math.random()*scale + (heightMap[x1][y2] + heightMap[x1+width][y1+width] + heightMap[x2][y2]) / 3);
+	if (h4 > 3) h4 = 3; else if (h4 < -3) h4 = -3;
+	
+	var h5 = Math.round((scale/2)-Math.random()*scale + (heightMap[x1+width][y1+width] + heightMap[x2][y1] + heightMap[x2][y2]) / 3);
+	if (h5 > 3) h5 = 3; else if (h5 < -3) h5 = -3;
+	
+	heightMap[x1+width][y1] = h2;
+	heightMap[x1][y1+width] = h3;
+	heightMap[x1+width][y2] = h4;
+	heightMap[x2][y1+width] = h5;
+	
+	/* generate height map recursively for quadrants of the current grid section. */
+	recurseHeightMap(heightMap, x1, y1, x1+width, y1+width);
+	recurseHeightMap(heightMap, x1+width, y1, x2, y1+width);
+	recurseHeightMap(heightMap, x1, y1+width, x1+width, y2);
+	recurseHeightMap(heightMap, x1+width, y1+width, x2, y2);
+}
+
+/* convert the randomly generated height map into a map data file, load it into the text box, and then render the map. */
+function loadHeightMap(heightMap, width, length) {
+	resultsClear();
+	var m = width + " " + length + "\n";
+	
+	var sx = 0, sy = 0, gx = 0, gy = 0; tries = 0;
+	var max = Math.max(width, length);
+	while ( (Math.abs(sx-gx)+Math.abs(sy-gy)) < (width+length)/2 || sx > width-1 || sy > length-1 || gx > width-1 || gy > length-1) {
+		sx = Math.floor(Math.random()*max);
+		sy = Math.floor(Math.random()*max);
+		gx = Math.floor(Math.random()*max);
+		gy = Math.floor(Math.random()*max);
+		tries++;
+	}
+	
+	m += sx + " " + sy + "\n";
+	m += gx + " " + gy + "\n";
+	for (y=0; y<heightMap.length-1; y++) {
+		for (x=0; x<heightMap.length-1; x++) {
+			avg = Math.round((heightMap[x][y]+heightMap[x+1][y]+heightMap[x+1][y+1]+heightMap[x][y+1])/4);
+			if (avg == -3) m += "W";
+			else if (avg == -2) m += "f";
+			else if (avg == -1) m += "r";
+			else if (avg == 0) m += "R";
+			else if (avg == 1) m += "F";
+			else if (avg == 2) m += "h";
+			else if (avg == 3) m += "M";
+		}
+		m+= "\n";
+	}
+	document.forms[0].elements["map"].value = m;
+	loadMap();
+}
+
+/* get a random value scaled to our possible terrain values.   */
+function getRand() {
+	return 3-Math.floor(Math.random()*7);
+}
+
+/* used for debugging - pushes messages into a section at the bottom of the page. */
+function debug(msg) {
+	document.getElementById("debug").innerHTML += msg;
+}
+
+function debugClear() {
+	document.getElementById("debug").innerHTML = "";
+}
+
+
+/* array of preset maps */
+var maps = new Array();
+maps[0] = 
+	"15 20\n" + 
+	"7 0\n" + 
+	"7 18\n" + 
+	"MMMhhffffffffff\n" + 
+	"MMMMMhhffffffff\n" + 
+	"hMMMhhhffFFFfff\n" + 
+	"fhMhffFFFFFFFff\n" + 
+	"fhhhffFFFFFFFFF\n" + 
+	"ffffFFFFFFFFfff\n" + 
+	"rrrrfFFFFFFffff\n" + 
+	"fffrrffFFFfffff\n" + 
+	"RRffrrrfFFFFfff\n" + 
+	"fRffffrFFFFFFff\n" + 
+	"fRfffWWWWWFFFFF\n" + 
+	"fRffWWWWWWWWFFF\n" + 
+	"fRRfffWWWWWWWrr\n" + 
+	"ffRRRRffffWWfff\n" + 
+	"fffffRRRfffffff\n" + 
+	"fffffffRfffffff\n" + 
+	"hffffffRRRRRRRR\n" + 
+	"Mhhffffffffffff\n" + 
+	"Mhhffffffffffff\n" + 
+	"MMhhhffffffffff\n";
+
+maps[1] = "30 20\n" + 
+	"15 5\n" + 
+	"15 15\n" + 
+	"MMMMMMMMMhhfffffffffffFFFMMMMM\n" + 
+	"MMMMMMMMhhffffffffffffffFFFMMM\n" + 
+	"hMMMMhhffFFFfffffffffffffFFFFF\n" + 
+	"fhMhffFFFFFFFffffffffffffffFFF\n" + 
+	"fhhhffFFFFFFFFfffffffWWWWWFFFF\n" + 
+	"ffffFFFFFFFFffffffffWWWWffffff\n" + 
+	"rrrrrFFFFFFffffffffWWWWfffffff\n" + 
+	"hhffrffFFFfffWWWWWWWWWWWffffff\n" + 
+	"RRRhrrWWWWWWWWWWWWWWWWffffffff\n" + 
+	"hhRhfWWWWWWWWWWWWWWWrrrrrfffff\n" + 
+	"MMRhhWWWWWWWWWWfffffffffrrrfff\n" + 
+	"RRRfWWWWWWWWFFFfffffffffffrrrr\n" + 
+	"hhffffWWWWWWWFFfffffffffffffFF\n" + 
+	"ffffffffffWWfffffffffffffffFFF\n" + 
+	"fffffffffffffffffffffffFFFFFFF\n" + 
+	"fffffffffffffffffffFFFFFFFFFFF\n" + 
+	"hffffffffffffffffffFFFFFFFFFFF\n" + 
+	"MhhfffffffffffffFFFFFFFFFFFfff\n" + 
+	"MhhffffffffffffffFFFFFFFFFFFff\n" + 
+	"MMhhhfffffffffffffFFFFFFFFFFFf\n";
+	
+	
+maps[2] = "30 20\n" + 
+	"15 5\n" + 
+	"15 15\n" + 
+	"MMMMMMMMMhhfffffffffffFFFMMMMM\n" + 
+	"MMMMMMMMhhffffffffffffffFFFMMM\n" + 
+	"hMMMMhhffFFFfffffffffffffFFFFF\n" + 
+	"fhMhffFFFFFFFfffffffffffffFFFF\n" + 
+	"fhhhffFFFFFFFFfffffffWWWWWFFFF\n" + 
+	"ffffFFFFFFFFffffffffWWWWffffff\n" + 
+	"rrrrrFFFFFFffffffffWWWWfffffff\n" + 
+	"hhffrffFFFfffWWWWWWWWWWWffffff\n" + 
+	"RRRhrrWWWWWWWWWWWWWWWWffffffff\n" + 
+	"hhRhfWWWWWWWWWWWWWWWrrrrrfffff\n" + 
+	"MMRhhWWWWWWWWWWfffffffffrrrfff\n" + 
+	"RRRfWWWWWWWWFFFfffffffffffrrrr\n" + 
+	"hhffffWWWWWWWFFfffffffffffffFF\n" + 
+	"ffffffffffWWfffffffffffffffFFF\n" + 
+	"fffffffffffffffffffffffFFFFFFF\n" + 
+	"fffffffffffffffffffFFFFFFFFFFF\n" + 
+	"hffffffffffffffffffFFFFFFFFFFF\n" + 
+	"MhhfffffffffffffFFFFFFFFFFFfff\n" + 
+	"MhhffffffffffffffFFFFFFFFFFFff\n" + 
+	"MMhhhfffffffffffffFFFFFFFFFFFf\n"; 
+
+
+maps[3] = "100 100\n" + 
+	"12 12\n" + 
+	"88 88\n" + 
+	"hrMfWWfWRMMWMWrfffRFFfWRWhRWFrrfFhfWRMFWWMrWFrfMMMRhRFhMfFWWhFMFfWffMWrrWRRMfMhFhRMrFrRrRWMFWRRrWWhM\n" + 
+	"ffhFMrfRRWWMMhhMhRrhWffhFMWhFFWWRFFrFMfhrfhhfrfRRfhffRMfhWRrfWWfrMfWRRMrhfFWRMFhWMWhfWWrWrRRRfhFWFRh\n" + 
+	"MMhRhWrMhrfhFFrRRMMWRhhhrRhfMrhfRrFWFrfWFhfFRFfRhRRhRfhrWRWMFRrMMWFMhFRWWWWRRrfMrrMRMfMrfWRrWFWfhRFf\n" + 
+	"WrRWFRffFhFhRWMFhrrMMfWRfrfRFFhrrfrFhFrhRhrWWMrMrhWhfhWWFWMMFWWMMFRRfRRhWRWMRfffWWRFffFrrfMWrfWFFRfr\n" + 
+	"hrhMfhFFRfRhrRFhrRMrWRrrRMfWfFRrrWMFrhMRhRFhfMfMfFMRFRrWFfrfRhfRFhFWhfMFMhWMWRWMMrWWhfrhffFMMWrfhFff\n" + 
+	"WWhMRFRMhMhMhFRMMMMMFrrFfMWhfWWRrRhrFMWWhRRWMMffMhRhMMrMWFFhMMhWMMRWhFWMfhRMhRRMrFFMWMWrMWrRhrrWrrWR\n" + 
+	"FRffrhMRMRWMhhhWRFhRWMhFFWWRRFWMFrrFfRrrfhrFffhFWMFRMFMFrfFrFFrMRMFhfMFrMRhMrrFRRFrRhMWRhRRFhMRFrhFR\n" + 
+	"rMhWrrfffWFrrFMMWrhRFWhfrMfhFRFrfFWFFMrRhRMhFhMWWhRfffFrMFWRWrFhWrFfMfrMMFMrRWFrMfWhhRWFhhWFFhMhRWWf\n" + 
+	"RhWhfrfRMRMfhhhMhfRrfFMWWFhfRRRRRFRRMWFfFFWWfMWRfMffhMFfhrWWFhWMMFMMFfRrhRRMWMrWFRMMMRMfFFMRWRMFfMWR\n" + 
+	"hFMMhhhFMWfMMhWMMhWRrhRRMMrFRhMWMhMWWMrRrWfRMFrfMrfRRMrhFWFFFMRMrfhfMFWFffrhfrRRFWFMWrhrhfMfhWRhRrFM\n" + 
+	"FRRrMRMrWhfFfFfrrhMFWMhWWMfMhFFhfhFhRfWRFfrMMMWfMMMFhFfWMfMrFfMRRFRFfWWhWWrRFrRfMMrRrWhhhRfrMfrMMfrf\n" + 
+	"fhWWMrWRfRfFRrWrFhhrrfRRRrMhrhFrWFWRhhMWfMRRFfRrFhRRfFMrMhffrWMFFrhhhFfWfRhFMfrWFWfRMfhrRFRfFMMRWWrh\n" + 
+	"RFhMRMhRRWFhfMRMWrMRfMhhfrMWRfffFhfFWrrMMWWhfhffrFhRRhWFFfrhfMFFfrrFrRhrhRffMWhMhMMhhMhFfhhWfMRWMFhR\n" + 
+	"frWMFFFMhhMMRWMhWhMFfWRFFrWhFRFFrRfWhhfMfRhfrRMhRRhRMWMhfRMMWfWFMFMffWWRMffMrMWffMMMfWrWrFhFhMffrhfR\n" + 
+	"MRWhMhrWMMhfhFRFRRWrRFFhfhRWrrMfFrFRhFrMfhFWWRMrrhRrWhffhfFfffFFRRWWhhRFFFrFffWrfhhhfrFhWFFRMrhhrrMR\n" + 
+	"hfRffMFrhfrfMhWFfFRFfWhhfffMWRWFWWrrrfRfWhWrFhMrhWMfFFMFMRffhhMFffRhhfMrRfWRFhRMfFWMFfrRRMMrFFfrRFFM\n" + 
+	"FWFrRFfRhrrMrFfRrFMWWFrWffffRMFrFMWhWrWffRRfRrRWfRrrrfFFWWrRrMWrhWrFWRWWMrWfFRrMFWWMrFRWhWMhWrFhRMhh\n" + 
+	"hrfRfrWhMMhfFhFWfMfrhrMWrrMWrFfMfrRFFrhrWRrrFFRWfWfMrRrRRWRRrRWRMfWffffFFMfhhrMhrrMRFFRRrMffRWfFFFWr\n" + 
+	"fhMMrhFhFWrffRFWRMFWWFRWffMRRWrhWWFWFfffRhWFhfMhWFRWrMrRrWfRWfFFhWFrrffFhMMrMfRWrFWWMRRFRRFrWRFrfMFf\n" + 
+	"RfMrhRFMhrRhFFMhFhhffMfWFfMRFMFRfrhRRFFFhMMWFWfWFWhRFRrFRRMrfRWRffMRFhfRWhFRrrfRrFFfhMMfFWfrWRhhhhhW\n" + 
+	"fWrRrFfrRMMMWMhMFRrRfRfRrrrfWrfrFrfhWFhfFMFrFFrrWMrWRRrRRhWMhffrhRWWMFhfWfMhhWFFMMFWhWWWRRhfWMfrWrhM\n" + 
+	"MfRFFfhhFRFRWrMfFRFffWrWWhrhMFRhMFFFWFMRWWWRfrMFfrFWMWrfhMRfhrMWhMrrfhhrffrhMRWRFWFMRFFWFMFFMWrhrWfF\n" + 
+	"MFWfrrrRrFWhFMWRfrFMffhWMrWhfMFfMfrhWFfRWhrrRMMRfFfWhWRRrFFRFrMrhrMMhrrRhMWWhMWMMfWMFRrrfhWRWRrfWhWM\n" + 
+	"hhRMrhMRhWrMffFMRRWWrrrMrWfrhhRWMFFFFFrMrWrfrMrMhRhMfrWrWFhMRWhRhRFMMRFfrfhhMhhMhRFrWfFfhRRRRMRhRWFR\n" + 
+	"RfFrhhhWWhhMRffrMrfrfhhhRFRFhWrFfWWhFRMFFWrrRhrFffRMhWWWMFffRfFWFFMrhfWRMFrhFRWhWWRRRWFRMMhMWrWrMhfM\n" + 
+	"MhRMrMMMWWWRRFhRWWFWFrrRhFRWhWRfMRRRrrhWWMhFhhFFFMMWhRRFfRFFrRffRFFhRhMrfWrrhFffhhrhrrMffRfrrhfrRMMR\n" + 
+	"hffFFWRMrffhrrMRhFFMfrMRFRFWWFWrrFhWfWRFFfWMWRhWMWWfMFhhRrhfrFWrhfRRWhMMFRWWMhMWRhFhMhWrffMRhfhFrMFf\n" + 
+	"MrhWfFfhFFRrWfrMWfhWrRhrRrfMMRWhRfrMRhfrRMWhFhRWWWWFMhWhMFrrhWMMrMFrWWrMrMFFrMWhMrRfWhhMFMrRWhhhfWhM\n" + 
+	"ffWRfhFRhhhhRMhffhWrWhRhfFffhhrfFFRMhWFffFfMrrhrrrhfrFMrFMhRWFMFFFRFMfFMWFWRhWWhfrRfrFfWfFffRMfMFWfR\n" + 
+	"MRWMhhWMRWWhhRhFrFRWfRMMrrRFWWMrMWFWMMfMhWWfWhrrFhRFRhWFWRrfFRfhhffhhhhRrrMFRFrfRrWWfhMFrRMrrWffFRfh\n" + 
+	"fhrRFfFhWfRrrhMfFMfMrRMMrrfRMfRrRhWWRrWrRhrrrfhhRWFrhRWrRrfFhMhMhrfrhWRhMhhWrffFMrfhFWrRrhrFRfMWhMWW\n" + 
+	"WWMhRrMhFhFhrMfFrRhhrWrWhhfWMrRRfhFFhhRWFRMfWhrrFMMrFhfWFFMrfhhFhhfhMRRhrfhhRWWrFRFhWrhrhFRfhhfFMMrW\n" + 
+	"WWffRMrRFWMRhMRMFfhFrFrWWMfMrRrRRRfrFhMhMrhMFWWMfFMFrrMMrRWrrfrMRMfhhWMWhRfWhMFFhrhWMFWWWRfFWRRRfhMr\n" + 
+	"frffRMhWRFfWhhRrMMMMrFWRWRFrrRfRrFRWfffffRrhhhfRhfWFhrRhhWWrRrfhfFhrhMhrMRMMRrrFFMfFrhrMWFFfWrrWrFRf\n" + 
+	"RMFRMFhMhrMfWFhRMhMMrWfhFrRMMrhfRhfMMfFRhhWWFMrMMRWWffRrffhhfWrhhfffFhrWRMMfMhrFFRRrfMfrMWRrRfRFFFrR\n" + 
+	"WfFfRFfFWrMFfhWWMfRRFRhFMFWfRMRWrrWWMMrRRMFMhfWFfMWMMFFrFFfRrRffFFhrMWfffRFWhhMFFRMWFWhWfrRFWWhFRhFR\n" + 
+	"rffhhWrrfMRFRhMMfFrWMhhWFWMFrRfFMrRFFrFWhfrWWFRMrrWFfRFrWMWfFMhfhFfMWFFFfhFWFRrMrMhWMMFfrWMWRhWrWffR\n" + 
+	"hFfrrhhhRRFhrFRFfrhrfRrrrRFWRhWMhMMfrWhMrhWfrRfRFWWRfhhMFfFWhRRrWrMWRrfFrrRFRMFFWMWfWMhMRMhWfMFhWFrf\n" + 
+	"FWrRrrMFffhhffMRWfRMrffFfrRhFMWffWfhhMhfWWMhrfrffrFhMhWrFMRrRWWfrfFfrhhMrhRMRMffrWFhrRMRFrFrFWfhWfhh\n" + 
+	"rhFhRMrrWfWWRhFRWMFhMhrrMWWWWhhrrWWrMfRWMhhfFRRWhRMFMMWFMhfFMWRMrRrRFfFWfRhFrFhfMFrfMhhWRWFMMFRWrRhh\n" + 
+	"ffFrWFRWhWfMfhhrWRFrMrfhMRffFhFFMWfhFWWFRRhfhWhWrrWRMRfRMRMfrrRhMWRfFMFWrrfRhrWWfhMWhMhFfMrhrhRRffFh\n" + 
+	"FrRrhfhWfrWhMMWhMFhFWhfRMrFhWFRhWFrrMhrRFRfMfhRFFWWRFWWRhFFMFWRMRrfhMWFhhffWFMhhMRFfhfMMFFRRFrrrfFfR\n" + 
+	"FFhWWrRRhMRfRFFWFMrMfFhFrhhWMWRffWWMRhRFrFRMWrrhfhMWfRMhMfhFffMrRrhfrfRfrhMrWrFWhWRfFrMWhhFhFMhfRFhf\n" + 
+	"fWFMWfrMRMFFWfhMfhFhWRWFfffMrWWWRrMhfrWWfrMFRrhWRhRrfFhWMRMRRhMfFMhWhfFrWWhMRWfMRRWMFhMrhMFrRWfMWhMf\n" + 
+	"hFrfWRFFWMWrrRFMFhhRWfhfhMWFhRWfrFFFFrRhfMFfRWWFrFFWhhRMffFhRfhhFFFWWMhfWfWfrhffWFfRffMhhMrFMRrfWWWW\n" + 
+	"FfRrFWFMMWFRMRFffrfWrfhrFWhMRfrWWfrRMRhRRffRRRFRfRrRfhRhMhFFRFWfRFhMrhfFRFhWWMWRfFMfrRWrRWFMhhMrrrMR\n" + 
+	"WFWRFWhMhFWFFfRWhhfFfRRfRWMFMrfFRfhfFhhhFrWrfFFFMrRhMMMhMrRFFFffFRMhMFMfRrfMRMFfrfrhhRFfhMFWWFhWfMrM\n" + 
+	"fWrWRWMrRrfWRfWhrhRrMFRRRhFfrRWFWhfFMFrhWrrWrrMrrfRWWFfhWfRrrrMfRFWRFrWWhfWRfWrFhMRMMWfRWrfrWhrRrrrr\n" + 
+	"hrFFhRRWMhFRfWRhMWRFRrRFWWFFrrFrFWRfFWhfRMhMhrWMhfMMfhFffRhFrrRRFFrRfRFWWRhFRRffFMhRRFFRRRMfhWrrRfrh\n" + 
+	"FhhrhWMFfFrFfhRfRWFMWWfWRFRWWFWRMfffFrWRhRWMrfRfrFRhfRWhRRhWRfRhRWFrhFMfRrhFRhMMfrfrFfrhFfRMhrRWfRfF\n" + 
+	"RrMrMhrWFhhRWrRMfhMfRRFfRMRFrRFrMhFMhhRFMrWfhFMMfrrrMRFhhfWFrfWWFfWMRMrFfWrfMhfMRRffRrfMFFWhFRrrfWWR\n" + 
+	"WfWfrrfFFRFWhFrWhMWrFMFMWFRrWfFWhWRhRMrRMrWhWrWrhRFRfrFfFfRFhFrWWhMrhMWRFfRrMFrfRrFMhFrWfffRFFRhFRFr\n" + 
+	"MFMRfFMMhMMRRFWRMFMMfRhMWhRRrRWhhWhhFWhhMFFRrMMrfWRFhhWhfFRfrRMrRRRMrFfMMFrrFMfMRfrFMRrFrrMWMRRFMfRR\n" + 
+	"rhFFfMFMhFfrRhfrMhMMRhRFMfrrMRMrfWrRWRFRWffWhWrWhfrrFMrWrRrRRhhRFfFWWfhMfMFhhrRfWRrfMFFWMFRFrrRWhMrW\n" + 
+	"MhrfWWfhWWFfrhRFfRffWrFfMfWhrhrMhRWWWfFMWrWRWWMrrWrWRWMRFfMhMFrRfrhhrfhFMRRWhMRFFhFRMfMWrfMMFRFrrrrF\n" + 
+	"WrWFhfRFfMRhFMWfrrrhWWhFhffhrWrfRMRfRWhRfWFhrFrMrRFrWhfrfWMfFMRrhhfrWhWRfMRFhRfWrMFWRffFWrrRhhRrfRWR\n" + 
+	"WhWFfMWhWrWMFhhRhRRRrMRRWMrFfMWFhWhhFfFhMrhfFfrfFFMrrhrWWMFFFFMWMMfWFFfhWhMRMRRRhRhrFfhfFMRRRWFMrRfF\n" + 
+	"hfFRMFrRRhrhMhrRrRrMRrhhRRFrhfhfrFMMrRWRMhFrMhWMRFhWFWWMrMWfrFffMrfRRMMFMRMhWRRMMRWMMhFWWMRhfWrfhrMM\n" + 
+	"rhfFMWFRMFMMfhWRrfMMWRWhfWRMrRWFRRMhRhRrRfMFfrhMRhrMrWMFFMRMrFrrfMfhWWWFRrFWMrFFMhfWrhRWhhMfWFhhhRhM\n" + 
+	"rhFFFMFfhMFhWffFrRRfWhfMFfWrWRMhWfRfWMWRWrWhMMMMWMrrRFMMRMfWfhMRWrRRRRrWhhRffhffrhMhRrFWMfrFMFFfWRFF\n" + 
+	"hFhWhfRRRWFRRFWrfRRrffFRhfRMRFrrMFRMRrFrRrWMfrhMRMrhWRhMhRWWRWfhrMMffWrWMfffFfrfhMfFFfMWWfMFhfFRFfFh\n" + 
+	"hMhrFWrhrWRfWWRMhMhhWMWfWMfhfrhrrWRhRFWffRRFRfhrrrhrfFFhMRfhFrRfFfRhRMMhrRrfWhhRhffrWFFfhhWfrhWWFrhM\n" + 
+	"frfhMFhfrhWRWrRRRFFhMfWMWRRMhhrMRWrFRFrffffrfFfMhfrWWrMRMMrrfMFfhhrMMRrWFFWFFfRhRRWfFFFrrrMFrfFMMFMr\n" + 
+	"WfRrMMMRRWhMRrWRRFrWMFMRhFMhRrhMRhMrWWMWrWRWhFRMWWFrFWRhfWfWhhRhFRRrWMMhRRrFRWhrMFrMfhRRfffhRhRRfRFf\n" + 
+	"hMMFRrMfFFrRhrMFMMfMhWFWrffhrFRWWMWfhfWrWRRRRfWWWMhWrrFWRffFFMrhrFfFhhMrRrrFfRfRMfFrWWFWRfhMFrMhWRRW\n" + 
+	"MWrRMfhhMffrfRMFhRRRWMWFRrfrrWRFfMMffRfhFMrhWrMfWFrRWFFfWFWRMhrhWFhhRhrFfMWRhffMhhfWMfFFFFhhRRRfMfRM\n" + 
+	"fhMrFfrWFfFhrMRrWfrMFWFMRRFrrRhWfMWrWfMrMhfRFFFfFhrhMhWMRFffrhMRfWWrMFFRrFhrrMhFfhFRMrfRrhFhhfffrhFf\n" + 
+	"WMfhRRffhWfhFrRRrMWWhrMfhhRFRfRMrfffrFWfFrWWrRfFWfMfMhrhFFrMfhfrFrRMfFhFMhFhhFFRfRRMfRRhFfMRfRrrFMFR\n" + 
+	"RhhhfRhMFhWFhRFWrrfWfRMMWRrhMhfWrFhMhFRWFWWMMWFMfFhfFfhRhhfMhFrWMWhffFRfRMrfWfRRhMFfFFFRrfWfrFfRWfMM\n" + 
+	"WhrhWfhfrfMrFrRFrWMMRffWFMFFhfWMRhWWRhRFhWWhRFhhRRFfRfFRFrhrrrffMhWMMhhrRhfWFrfrMFfRRfRfRFMMfFfrfFhf\n" + 
+	"WFWRhWfffRfhrWhRfWRWhrhhffWWFfMhrRMRrFrFrFfWfWrMhRRhhWhRFWRWMRFffRRRMRfWhrfRRWhMMrfrFWRfRfMhfrMFFMhR\n" + 
+	"FrWhrMFrrfffMfRRFWFFRWRrfrRWfFhhFFrrhMMRRfMhWFWffhMRfhhrMfrfFMWfWfMWhFMfFWfhhMfMhWffWRWWRWWfFRMRhMFF\n" + 
+	"WWrFhfrMWfrMWWWfrhFfrMFhrMMRfhMRRWMrRWhhffWrfrMRMfFhrfhRhWRrWrRrFfRhMFFMRFhMMfRrFWhrMFFWMffhMFfRfhMR\n" + 
+	"RhFhrWMMhFRrfWWFfFFrMhWfffffMWMWfRhWfWhrRfWfhRrRhfrfMFMWMRffWrRFRhWFfFFfWMhRhfFhfFRfMrhMRWMrhMFWWFRF\n" + 
+	"RMfffMRFWrfMrrMRWRWfRfrRRWrRFFfRMrWRFMfhWMRRWfMrWRfRMhWRFhfMffMhFFFfRFWRMWFMhWrFFFfWfrMFrFRMrRrWrRRf\n" + 
+	"fhWrrrWMRRFWMrfRRRWWWWhMFFMMFhWMhFRffWrrffMFhfFMRrRWFMfWfWrWMhRhhMFFRfhMMMRrrMfrFhRrWFrfhWrfFrfRhRRf\n" + 
+	"RhhfRRRfFrWFhhMMffWhWrRWFMrhrRFfFhrMFhhhfrWMhWFFRWfMRrhhrhRhWMhRFWfRMhfffrFffRrFFrRrMfhFFrWrhRWMRFrR\n" + 
+	"fRRhMhhFMMRMWWFhFFRhMhFFMRWfhFRRMMRhfffFrRMrFMRfMrhWRWMFrfhfRhFhWMFFWFrfRhFRRRFWhffWRhhMfrMWWhWrfffR\n" + 
+	"WRFRhFMrhrRMfRMMfrFhWfRFfMFWMFMFRWWfhMFMFfrRrrMMMWhfMrMhfMhRRRrFfrRRrfRhfFhMrWrfhMFFWhFFRMFfRWWRMWhh\n" + 
+	"RMRRFWWrFRrrfFWMWMhMRMMFhhrhFhFFfMRhMhhWFRfRhrWhFMhFrhWMfFfWfRWhRFRhMrMrrMhhMrhWMhFhWWMrMRFrMRfWhhWM\n" + 
+	"WfFrfrMFhrrFWhMRMWMfMRRfhRhWfhfFRrFMWfMRMRMMfFMrfRfrWMFMrWrRWfrRMFFWFMRFrfRMFFFFWFrrMhWhFhhMWRWMFWrR\n" + 
+	"RfMFMFWMrhMMFFfRfRFhMfRfMhfWWWRWhWrWRMrWWMMMFWWWWFrFMMfrWWfrWrMRMfrrMFfWfRFhhrFhhRRrRMRWfFfFrrfhRMRF\n" + 
+	"rhrhfrfMFFFfFWRMRrRWMfFWhRrRfhRFhfhMrWhMhfWMRRhhfMFMrWWFhrhfMWMFrMWWRffrWhMfrWrrMhFWRWFRrfFFhMRRWRFF\n" + 
+	"WMFFfRFhRRRFrfhMrFRfMrMFWWRFffFWrfrFMMhRRrWfRMhffMrrFrMFRRFrrRMFfrRWRfWhhRWFhRWFRRMRRMWRRrMWFMWWhRfW\n" + 
+	"RMrhRMWMWhrfMRRrWWfFWFWhRRfMFfhfMrfFrhfrFRhfrfrMFrrhhrWWffWFhrMfRhFWWMMWFfFRFFfWfWFrhRrRFrhWRRrMhhrR\n" + 
+	"rffFMhFMFRRMrMhhffWhMhMRWFRFWfrRRRhfRrrFWMRFMRhhRrhMMhfWrhWWFrFWrRFMrRhfMhhRMFrffrMhfFWfMrFffFMMRFWW\n" + 
+	"hhfhFFrMrRhhMhWrRMFFMWRMFFRWrrhRMRfrRRRMrMhRhMrFMWWFMfrMMfWRWRfhfrRWMRffWWhWRRRRfMFfrhfhFhRMMWfFrfFW\n" + 
+	"rrMMFrfMRRhhFhRFFrFfhWfRfrfFFrWWhhfhrMFWWhMrMhWRWMFMrFFfFhhMfMFrMMhrhFWFMhMWfhRFFhRhRWMrhhRRWFrWRWhF\n" + 
+	"fMffWFfRWRWWrMMRRrRWffWMWFMMWFffFffhWFWrfhWRWhrhFhMMWrrMWFWhfFFhrFRrWfhfRrRFWFfhMrWhMWFFfFfrWWrMFMfh\n" + 
+	"FrMMMrrWMMMhRRRFWWWfRrWMFhWFffRWrfFFrWMfhfWhhFMMWfhrhFFWWFMfWhRRWfRfrFfMrhFWWrhhMhWrMMfhRhhfMMWfWWWh\n" + 
+	"RWFRFWWfWMhrRWRMrrrhFRWWrFfRRWffFWrMFWRFRrhRffrMMFrrRFRFRfWRfFrfFMMfrWFRhMFfRMrfWWWMfRFMhFMhFfMWrMMr\n" + 
+	"fhfhrFrWfFfrWhRWMrRhrWRhMfWFFfFRWhWrhWMWhrFRFhFFFMrRhrFhMrhRMfrWhRMhRfMfFrFRfrrMWrhhfrffWWRWWWFhhMRf\n" + 
+	"WrWRMfhFRRRFrFfMhMWFWWRRhrfWRRffMFFWRRfRWFrFMfrfFWhfrrhMrFWRWhrRRhMrrfRfhWWWrMFFfMrWRMWhrFRFMfWMMRfW\n" + 
+	"hRMhrMfffhhrMhRfhRFFWFFRrhWfFfMRWhMRWrfWFhrhRhRhrWMRrMWMfWRWrrMfFfRhrFfWhRFrfRhRrFFWWFrrRrrfFWFfMrFR\n" + 
+	"fhRWhhFhFfFWhMffWfRrWrfRfhWrMMWrMfFhrFFWfFhrFMhWRffRrrRRMhRrFMrFWhfMWfFrFhMhMWWhffMhMFfMFWfFfhFfWFrr\n" + 
+	"MMWhhrhMrRrFWRRWWfRfRhRhRffWFhFMWMFMWFrfFFfrFMWMfFWFMRffRMrWfFrrMrMfMFMffFhWhWMWfrWMMhMMrfrfFFWRFfFR\n" + 
+	"WMRFFhfMrrrFffRrFFrFrfhWhFhRRMhMrhFfMfWrFfWWWfrRFMWWhfRFfhrWWRhWFhrrrWRRrrhFFhFWWRFFFfWWWFWWfFRFrRRW\n" + 
+	"fWfWWrhMrfRfhRhfFWRhrFWfMRhfRrFhFhMrfWMhrRWrWFhrrhRRFWhfrMrrMFfWfWrRFrfRMRrMhMWMWfFMffFFfMFfMfrMFhhf\n" + 
+	"rRFfRRRfrhfWWfMRMRhMFrFhFhrFrFhhMRhMrWWhFMWMWWrhhRMFWFWMWrhMMMhFRWFfWhRrhfMfhFRWfRFFFhMWfRFhWRhhfFfr\n" + 
+	"MhfRRRhFrrrMrWFFMRFFMhhhrRrrFhFMrhhrrfWFrWWrFRfRMFrrWhrRRRrfFFWhrrrhhrFRWffMRhfhfMfMMRWRMWfFMhrrWRFh\n";
+	
+	
+	/* load and render the preset map indicated by num */
+	function preloadMap(num) {
+		resultsClear();
+		document.forms[0].elements["map"].value = maps[num];
+		loadMap();
+	}
+	
+	/* perform a BFS or DFS of the given map.
+	   searchType: if SEARCH_TYPE_BFS is given, then perform BFS.  if SEARCH_TYPE_DFS is given, then perform DFS.
+	   closeVisited: if true, we "cheat" and close every node we visit (to avoid revisiting them).  This makes the search extremly fast but is not necessarily correct.
+	   findBestCost: if true, we search the entire search tree for the least cost (instead of stopping at the first-found path to the goal).
+	 */
+	function search(searchType, closeVisited, findBestCost) {
+		startTiming();
+		resetMarkings();
+		if ((searchType == SEARCH_TYPE_BFS || searchType == SEARCH_TYPE_DFS) && !closeVisited)
+			if (width > 8 || height > 8) {
+				alert("Not a good idea.  BFS / DFS without any tree pruning will take an eternity at this map size.  Even with an 8x8 map, a BFS search took almost an hour to run on my machine.  Please try a different search, or a smaller map size.  Canceling.");
+				return;
+			}
+			
+		debugClear();
+		
+		/* a companion 2D array for the map used to indicate node states (expanded/visited/closed) */
+		mapSearch = new Array();
+		for (var x=0; x<width; x++)	mapSearch[x] = new Array(/*height*/);
+		
+		for (var x=0; x<width; x++) 
+			for (var y=0; y<height; y++) {
+				mapSearch[x][y] = { "x": x, "y": y, "feature" : map[x][y], "state" : STATE_INIT, "path" : new Array(), "cost" : 0, "parent" : null, "depth" : 0, "bestCost" : null}
+			}
+		
+		var queue = new Array();
+		heapClear();
+		var explored = new Array(); // tree nodes already explored - kept so we can backtrack.
+		
+		var pX = Number(start[0]);
+		var pY = Number(start[1]);
+		
+		/* track the path with best cost */
+		var bestNode;
+		var bestCost = 99999999999;
+		
+		var deepest = 0;
+		var biggestQueue = 1;
+		var ucs = (searchType == SEARCH_TYPE_UCS);
+		var astar = (searchType == SEARCH_TYPE_ASTAR);
+
+		htype = document.forms[0].elements["heur"][document.forms[0].elements["heur"].selectedIndex].value;
+
+		
+		mapSearch[pX][pY].state = STATE_OPENED;
+		mapSearch[pX][pY].depth = 1;
+		mapSearch[pX][pY].visited = new Array();
+		v = ""+pX+","+pY;
+		mapSearch[pX][pY].visited[v] = true;
+		
+		if (ucs || astar) heapAdd(mapSearch[pX][pY])
+		else queue.push(mapSearch[pX][pY]);
+		
+		var node;
+		var steps = 0;
+		var found = false;
+		var skipped = 0;
+		
+		
+		var tmpBetters = 0; 
+		var tmpIgnores = 0;
+		
+		while (((ucs || astar) && heapPointer > 0) || (!(ucs || astar) && queue.length > 0)) {
+			if (ucs || astar) node = heapDelete(); // if uniform-cost search, use the binary heap to keep things sorted by cost.
+/*			if (ucs)
+			   debug("removed " + node.cost + " [" + heapPointer + "]");
+*/			
+			else node=((searchType == SEARCH_TYPE_BFS || ucs || astar) ? queue.shift() : queue.pop());  // if BFS, use FIFO queue; if DFS, use LIFO queue.
+			
+			if (astar) { // replace the heuristic cost with the real cost
+				if (node.parent) {
+//					debug("visiting " + node.x + "," + node.y + ", est. cost was " + node.cost + ", ");
+//					if (node.parent) debug(" parent cost " + node.parent.cost + ", "); else debug(" no parent node, ");
+//					debug(" cost(x,y,false) = " + cost(x,y,false) + "," );
+					node.cost = Number(node.parent ? node.parent.cost : 0) + cost(node.x, node.y, false); 
+//					debug("cost now " + node.cost + "<br>");
+				}
+			}
+
+			// track the best cost found thusfar for a path through grid square (x,y)
+			if (astar) {
+				if (mapSearch[node.x][node.y].bestCost == null) mapSearch[node.x][node.y].bestCost = node.cost; 
+				else if (node.cost < mapSearch[node.x][node.y].bestCost) {tmpBetters++; mapSearch[node.x][node.y].bestCost = node.cost;} // node has best cost seen so far, so expand it.
+				else {tmpIgnores++; skipped++; continue;} // otherwise, ignore this node, since we already saw a node of better cost
+			}
+			else if (closeVisited && mapSearch[node.x][node.y].state == STATE_CLOSED) {
+				skipped++;
+				continue;
+			}
+			steps++;
+			if (node.depth > deepest) { deepest = node.depth; }
+			
+			/* Uncomment this if you want a periodic user confirmation to continue during slow searches.
+			if (steps % 50000 == 0) { 
+				if (!confirm("We just hit " + steps + " iterations, covering " + countVisited(mapSearch) + "% of the map, queue size " + queue.length + ", deepest node has depth " + deepest + ".  Click OK to keep searching, or Cancel to quit.")) 
+					return; 
+			}*/
+				
+			if (node.x == goal[0] && node.y == goal[1]) {  // a goal was found
+				if (node.cost < bestCost) {
+					bestNode = node;
+					bestCost = node.cost;
+				}
+				found = true;
+				
+				if (astar && (htype == 0 || htype == 1))
+					break; /* the manhattan distance and euclidian distance heuristics are consistent (monotonic); thus, we can stop the search upon 
+						reaching the goal for the first time, because it is guaranteed to be the best path. */
+				else if (!findBestCost) break; // stop the search if we aren't trying to find best cost via brute force.
+			}
+
+			/* try to expand all the possible child nodes from here. */
+			BFSPushNode(searchType, queue, mapSearch, node, node.x-1, node.y); // left
+			BFSPushNode(searchType, queue, mapSearch, node, node.x+1, node.y); // right
+			BFSPushNode(searchType, queue, mapSearch, node, node.x, node.y-1); // up
+			BFSPushNode(searchType, queue, mapSearch, node, node.x, node.y+1); // down
+			
+			
+			if (document.forms[0].elements["allowDiagonal"].checked) { // let's try diagonals too
+				BFSPushNode(searchType, queue, mapSearch, node, node.x-1, node.y-1); 
+				BFSPushNode(searchType, queue, mapSearch, node, node.x+1, node.y-1); 
+				BFSPushNode(searchType, queue, mapSearch, node, node.x-1, node.y+1); 
+				BFSPushNode(searchType, queue, mapSearch, node, node.x+1, node.y+1); 
+			}
+
+			if (closeVisited) {
+				mapSearch[node.x][node.y].state = STATE_CLOSED;
+			} else
+				mapSearch[node.x][node.y].state = STATE_VISITED;
+				
+			node.path = null;
+			
+			if (queue.length > biggestQueue) { biggestQueue = queue.length; }
+			
+		}
+		endTiming();
+		if (!found) { alert("Sorry, goal cannot be reached."); return; }
+		else if (findBestCost || astar) node = bestNode;
+		renderResults(searchType, steps, skipped, node, mapSearch, biggestQueue, deepest);
+		
+		//debug("betters " + tmpBetters + ", ignores " + tmpIgnores);
+		
+	}
+	
+	/* if the given node is valid, and has not already been visited along the current path, then push it onto the search queue. */
+	function BFSPushNode(searchType, queue, mapSearch, parent, x, y) {
+		if (x >= 0 && x < width && y >= 0 && y < height && mapSearch[x][y].feature != "W") { // grid square out of bounds?  grid square is in water?
+			if (!visited(parent,x,y)) { // grid square not already visited (avoid cycle)?
+				var item = {"x": x, "y": y, /*"feature" : map[x][y].feature, */  "state" : STATE_OPENED, /*"path" : newArr, */ "cost" : parent.cost + cost(x, y, (searchType == SEARCH_TYPE_ASTAR)), "parent" : parent, "depth" : parent.depth+1/*, "visited" : newV*/};
+				/*if (ucs)
+					priorityQueueAdd(queue, item);
+				else*/
+				if (searchType == SEARCH_TYPE_UCS || searchType == SEARCH_TYPE_ASTAR) heapAdd(item);
+				else queue.push(item);
+			} 
+		}
+	}
+
+	/* determine if the current path has already visited the grid square at x,y */
+	function visited(parent, x, y) {
+		while (parent != null) {
+			if (parent.x == x && parent.y == y) { return true; }
+			parent = parent.parent;
+		}
+	}	
+
+	/* display all the search results on the map and in the results area of the page. */
+	function renderResults(searchType, steps, skipped, node, mapSearch, biggestQueue, deepest) {
+		var p = "";
+
+		var parent=node;
+		var count=0;
+		while (parent != null) {
+			p = parent.x + "," + parent.y + " " + p;
+			if ((parent.x != goal[0] || parent.y != goal[1]) && (parent.x != start[0] || parent.y != start[1])) {
+				mapSearch[parent.x][parent.y].state = STATE_PATH;
+			}
+			parent = parent.parent;
+			count++;
+		}
+		
+		render();
+		resultsClear();
+		var st;
+		
+		var visitCount = 1;
+		for (var i=0; i<width; i++)
+			for (var j=0; j<height; j++)
+				if (mapSearch[i][j].state == STATE_PATH || mapSearch[i][j].state == STATE_VISITED || mapSearch[i][j].state == STATE_CLOSED)
+					visitCount++;
+		
+		if (searchType == SEARCH_TYPE_BFS) st = "breadth-first search";
+		else if (searchType == SEARCH_TYPE_DFS) st = "depth-first search";
+		else if (searchType == SEARCH_TYPE_UCS) st = "uniform cost search";
+		else if (searchType == SEARCH_TYPE_ASTAR) st = "A* search";
+		results("Found goal using <b>" + st + "</b>.  We visited <b>" + steps + "</b> nodes, and skipped <b>" + skipped + "</b> nodes.<br>");      
+		results("The search explored <b>" + visitCount + "</b> grid squares (<b>" + (height*width-visitCount) + "</b> grid squares were unexplored).<br>");
+		results("Path covers <b>" + (count) + "</b> grid squares.<br>");
+		results("Path cost: <b>" + (node.cost) + "</b>.<br>");
+		results("The queue reached this maximum length during the search: <b>" + biggestQueue + "</b>.<br>");
+		results("The deepest node visited had depth <b>" + deepest + "</b>.<br>");
+		results("The search took <b>" + ((endTime.getTime() - startTime.getTime())/1000) + "</b> seconds.<br>")
+		results("path: " + p + "<br>"); 
+		
+		keepNodes = steps;
+		keepTime = ((endTime.getTime() - startTime.getTime())/1000);
+	}
+
+	/* lookup the numerical cost for the given terrain feature.   */
+	function cost(x, y, astar) {
+		if (x < 0 || x > width-1 || y < 0 || y > height -1) { return 0 };
+		var c;
+		var node = mapSearch[x][y];
+		
+		var gx = Number(goal[0]);
+		var gy = Number(goal[1]);
+		switch (node.feature) {
+			case "R" : c=1; break;
+			case "f" : c=2; break;
+			case "F" : c=4; break;
+			case "h" : c=5; break;
+			case "r" : c=7; break;
+			case "M" : c=10; break;
+			default : c=999999;
+		}
+//		debug(x + ", " + y + " feature cost " + c); 
+		if (astar) {
+			
+			// for astar, a heuristic cost is added.  
+			if (htype == 0)
+				c += Math.abs(gx - x) + Math.abs(gy - y); // number of steps (manhattan distance)
+			else if (htype == 1)
+				c += Math.sqrt( (gx - x)*(gx - x) + (gy - y)*(gy - y) ); // euclidian (straight line) distance
+			else if (htype == 2)
+			    c += cost(x-1, y-1, false) + cost(x, y-1, false) + cost(x+1, y-1, false) + 
+			         cost(x-1, y, false) + cost(x+1, y, false) + 
+			         cost(x-1, y+1, false) + cost(x, y+1, false) + cost(x+1, y+1, false); // sum of costs of surrounding terrain features
+//			debug(" heur cost " + c + "<br>");
+		}
+		return c;
+	}
+	
+	/* determine the total number of visited nodes */
+	function countVisited(mapSearch) {
+		var count = 0;
+		for (i=0; i<mapSearch.length; i++)
+			for (j=0; j<mapSearch[i].length; j++)
+				if (mapSearch[i][j].state == STATE_VISITED || mapSearch[i][j].state == STATE_CLOSED) count++;
+				
+		return Math.round(count/(height*width)*100);
+	}
+	
+	/* write the results to the screen */
+	function results(msg) {
+		document.getElementById("results").innerHTML += msg;
+	}
+	function resultsClear() {
+		document.getElementById("results").innerHTML = "";
+	}
+	
+	/* binary heap: add */
+	function heapAdd(item) {
+		if (!binaryHeap || binaryHeap.length == 0) {
+			binaryHeap = new Array();
+			binaryHeap[0] = item;
+			heapPointer++;
+//			debug("added " + item.cost + " [" + heapPointer + "]");
+			return;
+		}
+		binaryHeap[heapPointer] = item;
+		var i = heapPointer;
+		var parent;
+		while (i != 0) {
+			parent = Math.floor((i-1)/2);
+			if (binaryHeap[parent].cost > binaryHeap[i].cost) {
+				heapSwap(parent, i);
+			}
+			i = parent;
+		}
+		heapPointer++;
+//		debug("added " + item.cost + " [" + heapPointer + "]");
+	}
+	
+	/* binary heap: delete */
+	function heapDelete() {
+		if (!binaryHeap) return false;
+		if (binaryHeap[0] == null) return false;
+		var item = binaryHeap[0];
+		heapPointer--;
+		binaryHeap[0] = binaryHeap[heapPointer];
+		binaryHeap[heapPointer] = null;
+		
+		i=0;
+		while (binaryHeap[2*i+1]) {
+			left = binaryHeap[2*i+1];
+			right = binaryHeap[2*i+2];
+			if (!right) {
+				if (left.cost < binaryHeap[i].cost) {
+					heapSwap(2*i+1,i);
+					i = 2*i+1;
+				}
+				else break;
+			} else {
+				if (left.cost < right.cost && left.cost < binaryHeap[i].cost) {
+					heapSwap(2*i+1,i);
+					i = 2*i+1;
+				}
+				else if (left.cost >= right.cost && right.cost < binaryHeap[i].cost) {
+					heapSwap(2*i+2,i);
+					i = 2*i+2;
+				}
+				else break;
+			}
+			
+		}
+		return item;
+	}
+	
+	function heapSwap(i,j) {
+		swap = binaryHeap[i];
+		binaryHeap[i] = binaryHeap[j];
+		binaryHeap[j] = swap;
+	}
+	
+	function heapClear() {
+		binaryHeap = null;
+		heapPointer = 0;
+		
+	}
+	
+	function testHeap() {
+		
+		for (i=0; i<100; i++) {
+			heapAdd( {cost: Math.random()*100 } );
+		}
+		
+		while (item = heapDelete()) {
+			if (item)
+			debug(heapPointer + " removed " + item.cost + "<br>");
+			else debug("crap! <br>")
+		}
+	}
+	
+	function keypress(event) {
+		if (toggleStartGoal) {
+			x = Number(goal[0]);
+			y = Number(goal[1]);
+		}
+		else {
+			x = Number(start[0]);
+			y = Number(start[1]);
+		}
+		var key = window.event ? event.keyCode : event.which;
+		if (key == 105) mark(x, y-1);
+		else if (key == 106) mark(x-1, y);
+		else if (key == 107) mark(x, y+1);
+		else if (key == 108) mark(x+1, y);
+	}
+	
+	function test() {
+		var line;
+		for (var size=11; size< 122; size+= 10) {
+			height = size; width = size;
+			start[0] = (size-1)/2;
+			start[1] = 0;
+			goal[0] = (size-1)/2;
+			goal[1] = size-1;
+			line += size + ",";
+			search(SEARCH_TYPE_BFS, true, false);
+			line += keepNodes + "," + keepTime + ",";
+			search(SEARCH_TYPE_DFS, true, false);
+			line += keepNodes + "," + keepTime + ",";
+			search(SEARCH_TYPE_UCS, true, false);
+			line += keepNodes + "," + keepTime + ",";
+			document.forms[0].elements["heur"].selectedIndex = 0;
+			search(SEARCH_TYPE_ASTAR, true, false);
+			line += keepNodes + "," + keepTime + ",";
+			document.forms[0].elements["heur"].selectedIndex = 1;
+			search(SEARCH_TYPE_ASTAR, true, false);
+			line += keepNodes + "," + keepTime + ",";
+			document.forms[0].elements["heur"].selectedIndex = 2;
+			search(SEARCH_TYPE_ASTAR, true, false);
+			line += keepNodes + "," + keepTime + ",";
+			line += "<br>";
+		}
+		debug(line);
+	}
+
+</script>
+
+
+<html>
+<style>
+
+* {
+font-family: arial, verdana;
+font-size: 10pt;
+}
+
+textarea {
+	font-family: courier;
+	font-size: 8pt;
+}
+
+.table, .table td , .table th {border: thin solid black; border-collapse: collapse; padding: 2px 2px 2px 2px;}
+
+.M { width: 16px; height: 16px; background-image: url(M.gif); }
+.R { width: 16px; height: 16px; background-image: url(R.gif); }
+.f { width: 16px; height: 16px; background-image: url(f.gif); }
+.fo { width: 16px; height: 16px; background-image: url(fo.gif); }
+.h { width: 16px; height: 16px; background-image: url(h.gif); }
+.W { width: 16px; height: 16px; background-image: url(W.gif); }
+.ri { width: 16px; height: 16px; background-image: url(ri.gif); }
+
+.bard { border-collapse: collapse;}
+.board td { border-width: 0px ;}
+
+.manM { width: 16px; height: 16px; background-image: url(man.gif); }
+.manR { width: 16px; height: 16px; background-image: url(man.gif); }
+.manf { width: 16px; height: 16px; background-image: url(man.gif); }
+.manfo { width: 16px; height: 16px; background-image: url(man.gif); }
+.manh { width: 16px; height: 16px; background-image: url(man.gif); }
+.manW { width: 16px; height: 16px; background-image: url(man.gif); }
+.manri { width: 16px; height: 16px; background-image: url(man.gif); }
+
+.fadeM { width: 16px; height: 16px; background-image: url(Mfade.gif); }
+.fadeR { width: 16px; height: 16px; background-image: url(Rfade.gif); }
+.fadef { width: 16px; height: 16px; background-image: url(ffade.gif); }
+.fadefo { width: 16px; height: 16px; background-image: url(fofade.gif); }
+.fadeh { width: 16px; height: 16px; background-image: url(hfade.gif); }
+.fadeW { width: 16px; height: 16px; background-image: url(Wfade.gif); }
+.faderi { width: 16px; height: 16px; background-image: url(rifade.gif); }
+
+.goalM { width: 16px; height: 16px; background-image: url(goal.gif); }
+.goalR { width: 16px; height: 16px; background-image: url(goal.gif); }
+.goalf { width: 16px; height: 16px; background-image: url(goal.gif); }
+.goalfo { width: 16px; height: 16px; background-image: url(goal.gif); }
+.goalh { width: 16px; height: 16px; background-image: url(goal.gif); }
+.goalW { width: 16px; height: 16px; background-image: url(goal.gif); }
+.goalri { width: 16px; height: 16px; background-image: url(goal.gif); }
+
+.visitedM { width: 16px; height: 16px; background-image: url(Mvisited.gif); }
+.visitedR { width: 16px; height: 16px; background-image: url(Rvisited.gif); }
+.visitedf { width: 16px; height: 16px; background-image: url(fvisited.gif); }
+.visitedfo { width: 16px; height: 16px; background-image: url(fovisited.gif); }
+.visitedh { width: 16px; height: 16px; background-image: url(hvisited.gif); }
+.visitedW { width: 16px; height: 16px; background-image: url(Wvisited.gif); }
+.visitedri { width: 16px; height: 16px; background-image: url(rivisited.gif); }
+
+.maps { background-color: #ccffcc; padding: 2px 7px 2px 2px;}
+
+</style>
+<body onkeypress="return keypress(event)" onload="preloadMap(0)">
+<p>
+	<form>
+		<table border="0">
+			<tr valign="top">
+				<td align="right" nowrap="true" class="maps">
+	Map data:&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<br>
+	<textarea cols="20" rows="20" name="map" id="map"></textarea><br>
+<p>
+	<a href="javascript:loadMap()">render the above map data</a><br>
+	<a href="javascript:preloadMap(0)">render preset map 1</a><br> 
+	<a href="javascript:preloadMap(1)">render preset map 2</a><br> 
+	<a href="javascript:preloadMap(2)">render preset map 3</a><br> 
+	<a href="javascript:preloadMap(3)">render preset map 4</a><br> 
+	<a href="javascript:randomHeightMap(2,2)">render a random map, size 2</a><br>
+	<a href="javascript:randomHeightMap(3,3)">render a random map, size 3</a><br>
+	<a href="javascript:randomHeightMap(4,4)">render a random map, size 4</a><br>
+	<a href="javascript:randomHeightMap(5,5)">render a random map, size 5</a><br>
+	<a href="javascript:randomHeightMap(6,6)">render a random map, size 6</a><br>
+	<a href="javascript:randomHeightMap(7,7)">render a random map, size 7</a><br>
+	<a href="javascript:randomHeightMap(8,8)">render a random map, size 8</a><br>
+	<a href="javascript:randomHeightMap(16,16)">render a random map, size 16</a><br>
+	<a href="javascript:randomHeightMap(32,32)">render a random map, size 32</a><br>
+	<a href="javascript:randomHeightMap(64,64)">render a random map, size 64</a><br>
+	<a href="javascript:randomHeightMap(128,128)">render a random map, size 128</a><br>
+	<a href="javascript:randomHeightMap(Number(document.forms[0].elements['width'].value),Number(document.forms[0].elements['height'].value))">render a random map, size: </a><br>
+	&nbsp;&nbsp;&nbsp;&nbsp;<input value="10" type="text" name="width" style="width: 25px">x<input value="10" type="text" name="height" style="width: 25px"><br>
+	Height map scaling: 
+	<select name="scale"><option value="3.0">3.0</option><option selected="true" value="2.0">2.0</option>
+		<option value="1.0">1.0</option><option value="0.25">0.25</option>
+		<option value="0.10">0.10</option>
+<option value="5.0">5.0</option>		
+<option value="100.0">100.0</option>		
+		</select><br><i>(Smaller values = smoother maps)</i>
+	<!--<input type="button" onclick="randomHeightMap(257)" value="Random Map size 256"><br>-->
+	</p>
+	</td>
+	<td>
+<!--		<a href="javascript:debugClear(); testHeap()"> test heap </a>-->
+		<div id="grid">
+		</div>
+		[<a href="javascript:showStart()">Toggle start</a>]&nbsp;
+		[<a href="javascript:showGoal();">Toggle goal</a>]&nbsp;
+		[<a href="javascript:changeStartGoal();">Clicking grid square relocates <div style="display:inline" id="toggle">start</div></a>]&nbsp;
+		[<a href="javascript:randomStartGoal();">Randomize start/goal</a>]&nbsp;
+		[<a href="javascript:resetMarkings(); render();">Clear markings</a>]<br>
+		<i>Clicking a square in the map will relocate the <div style="display:inline" id="toggle2"></div> position to that spot.  You can also move the positions using the I, J, K, and L keys.</i><br>
+		<input type="checkbox" name="clickSearch" checked="true"> Perform <select name="search"><option value="0">A*</option><option value="1">Uniform-Cost</option></select> search after each relocation.<br>
+		<input type="checkbox" name="allowDiagonal"> Allow diagonal moves.<br>
+		<u><b>Click one of the links below to run a search:</b></u><br>
+		<a href="javascript:search(SEARCH_TYPE_ASTAR, true, false);">A* search</a>, using the <select name="heur"><option value="0">Manhattan distance</option><option value="1">Euclidian distance</option><option value="2">surrounding terrain cost</option></select> heuristic.<br>
+		<a href="javascript:search(SEARCH_TYPE_UCS, true, false);">Uniform-cost search</a><br>
+		<a href="javascript:search(SEARCH_TYPE_BFS, true, false);">Breadth-first search</a><br>
+		<a href="javascript:search(SEARCH_TYPE_DFS, true, false);">Depth-first search</a><br>
+<!--		<u><b>Slower searches:</b></u> (WARNING: these searches are very slow for larger map sizes)<br>
+		<a href="javascript:search(SEARCH_TYPE_UCS, false, false);">Uniform-cost search (minimize path cost)<br>
+		<a href="javascript:search(SEARCH_TYPE_BFS, false, false);">Breadth-first search (minimize path length)</a> (WARNING: this search is SLOW for all but the smallest maps, unless the goal is close to the start)<br>
+		<a href="javascript:search(SEARCH_TYPE_DFS, false, false);">Depth-first search (minimize path length)</a> (this search is fast unless the start is close to the goal)<br>
+		<a href="javascript:search(SEARCH_TYPE_BFS, false, true);">Breadth-first search (minimize path cost)</a> (WARNING: this search is SLOW for all but the smallest maps, unless the goal is close to the start)<br>
+		<a href="javascript:search(SEARCH_TYPE_DFS, false, true);">Depth-first search (minimize path cost)</a> (this search is fast unless the start is close to the goal)<br>-->
+		<div id="results"></div>
+	</td>
+	</tr>
+	</table>
+	</form>
+</p>
+<p>
+	<b><u>What is this?</u></b><br>
+	This application demonstrates different pathfinding methods on a simple map that contains a small number of terrain elements.  The map above is a grid of terrain elements.  The table below shows what each of the terrain elements are.  Each terrain element has a movement cost.  The idea is to find the lowest-cost path from a start location to a goal location.
+</p>
+<p>
+<b><u>Quick Start</u></b>
+</p>
+<p>
+	A* search is the fastest map search here; click the "A* search" link to perform the search on the map.  Try different maps by clicking one of the "render preset map" links on the left, or by generating random maps by clicking one of the "render a random map" links.  Clicking on the map will relocate the start location (represented by a picture of a person).  Click the "Clicking grid square relocates start" link to change modes.  This will let you relocate the goal location (the castle icon) by clicking on the map.  This application works best in Firefox and Safari.  It also works in Internet Explorer but is a bit slower (the searches are still fast, but the rendering time is slower for some reason).
+</p>
+<p>
+<b><u>More information</u></b>
+</p>
+<p>
+	To begin, render a map.  A sample preset map is already shown when you load this page.  This map is shown if you click the "render preset map 1" link.  The corresponding map data file appears in the "Map data" textbox.  You can supply your own custom maps in this textbox.  Simply type or paste the data into the box and click the "render the above map data" link.  You can also generate random maps of different sizes with the various "render a random map" buttons.  Clicking one of these will run a fractal terrain generation scheme to produce a randomized map.  You can "smooth" out the maps by selecting smaller values from the "height map scaling" pulldown list before clicking the "render a random map" links.  Likewise, larger scaling values will produce rougher-looking maps.  Note that random maps sizes larger than 100 or so may take slightly longer to run searches on.  For example, searching the largest map possible (255x255) takes about 20 to 30 seconds on my machine.
+</p>
+<p>
+	Once you see the map you want, you can click "Toggle start" to hide or show a person icon indicating the starting location on the map.  Click "Toggle goal" to hide or show a castle icon indicating the goal location on the map.  Click "Breadth-first search" to perform a breadth-first search (BFS), which will find the shortest path between the start and the goal.  In general, this path will not have the lowest cost.  Click "Depth-first search (stop on first goal)" to perform a depth-first search (DFS), which will return the first deepest path found between the start and the goal.  This path is certainly of neither low cost nor minimum length.  Neither BFS nor DFS are good searches, because they do not consider the path cost.  Uniform-cost and A* search, however, both find the best path costs.  A* is associated with a heuristic, which affects its searching strategy.  The best heuristic here for A* is the Manhattan distance; use the pulldown list to try out different heuristics.
+</p>
+<p>When a search is complete, the result is shown as a white path on the map.  White dots indicate grid squares that were visited by the algorithm.  Additional numerical results collected during the search are also displayed.  If the search finds no path to the goal, however, an alert will appear.
+</p>
+<table class="table">
+	<tr>
+		<th>Icon</th><th>Map data symbol</th><th>Terrain type</th><th>Movement cost</th>
+	</tr>
+	<tr>
+		<td align="right"><img src="R.gif"></td><td>R</td><td>road</td><td>1</td>
+	</tr>
+	<tr>
+		<td align="right"><img src="f.gif"></td><td>f</td><td>field</td><td>2</td>
+	</tr>
+	<tr>
+		<td align="right"><img src="fo.gif"></td><td>F</td><td>forest</td><td>4</td>
+	</tr>
+	<tr>
+		<td align="right"><img src="h.gif"></td><td>h</td><td>hills</td><td>5</td>
+	</tr>
+	<tr>
+		<td align="right"><img src="ri.gif"></td><td>r</td><td>river</td><td>7</td>
+	</tr>
+	<tr>
+		<td align="right"><img src="M.gif"></td><td>M</td><td>mountains</td><td>10</td>
+	</tr>
+	<tr>
+		<td align="right"><img src="W.gif"></td><td>W</td><td>water</td><td>Can't be entered</td>
+    </tr>
+</table>
+<div id="debug"></div>
+</body>
+</html>
